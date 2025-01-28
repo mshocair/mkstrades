@@ -1,5 +1,6 @@
 import os
 import json
+import traceback  # For detailed error tracebacks
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -33,6 +34,7 @@ def index():
 def test_append():
     """Example route to add a row to the Google Sheet"""
     try:
+        # Example row to append
         row_values = [
             ["Hello", "Render!", "It works."]
         ]
@@ -47,6 +49,13 @@ def test_append():
 
         return "Row added successfully!"
     except Exception as e:
+        # Log the full stack trace for debugging
+        traceback.print_exc()
+
+        # Log the error to the console
+        print(f"Error in /test-append: {e}")
+
+        # Return a detailed error message
         return f"Error: {e}", 500
 
 # If you have a Telegram webhook, define it similarly:
