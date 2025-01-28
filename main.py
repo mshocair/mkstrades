@@ -42,7 +42,7 @@ def test_append():
         body = {"values": row_values}
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range="Sheet1!A1",   # or "Trades!A1"
+            range="Trades!A1",   # or "Trades!A1"
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
