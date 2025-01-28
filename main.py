@@ -4,6 +4,7 @@ import traceback  # For detailed error tracebacks
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import requests  # For sending messages back to Telegram
 
 app = Flask(__name__)
 
@@ -26,9 +27,11 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
 
+
 @app.route("/")
 def index():
     return "Hello from Render + Python + Google Sheets!"
+
 
 @app.route("/test-append")
 def test_append():
@@ -42,7 +45,7 @@ def test_append():
         body = {"values": row_values}
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range="Trades!A1",   # or "Trades!A1"
+            range="Trades!A1",   # Ensure this matches your sheet name
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
@@ -58,11 +61,55 @@ def test_append():
         # Return a detailed error message
         return f"Error: {e}", 500
 
-# If you have a Telegram webhook, define it similarly:
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    # parse Telegram update and respond
-    return "ok"
+    """Handle incoming Telegram updates via webhook"""
+    try:
+        # Parse the incoming Telegram update
+        update = request.get_json()
+        print(f"Received update: {update}")  # Debug log to check incoming updates
+
+        # Extract the message and chat ID
+        message = update.get("message")
+        if not message:
+            return "ok", 200
+
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+
+        # Handle /start command
+        if text == "/start":
+            send_telegram_message(chat_id, "Welcome! Use /add to add trades or /average to calculate averages.")
+        elif text.startswith("/add"):
+            send_telegram_message(chat_id, "Command /add received! Add logic to process the trade here.")
+        elif text.startswith("/average"):
+            send_telegram_message(chat_id, "Command /average received! Add logic to calculate averages here.")
+        else:
+            send_telegram_message(chat_id, "Unknown command. Use /start, /add, or /average.")
+
+        return "ok", 200
+    except Exception as e:
+        # Log the error for debugging
+        traceback.print_exc()
+        print(f"Error in telegram_webhook: {e}")
+        return "error", 500
+
+
+def send_telegram_message(chat_id, text):
+    """Send a message back to the user via Telegram."""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+        }
+        response = requests.post(url, json=payload)
+        response.raise_for_status()  # Raise exception if the request fails
+    except Exception as e:
+        # Log the error
+        print(f"Failed to send message: {e}")
+
 
 if __name__ == "__main__":
     # This is for local testing. On Render, we use gunicorn main:app
