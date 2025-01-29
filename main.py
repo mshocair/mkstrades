@@ -26,11 +26,9 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
 
-
 @app.route("/")
 def index():
     return "Hello from Render + Python + Google Sheets!"
-
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
@@ -65,6 +63,22 @@ def telegram_webhook():
         print(f"Error in telegram_webhook: {e}")
         return "error", 500
 
+def process_holdings_command(command):
+    """Process the /holdings command to calculate total holdings."""
+    try:
+        parts = command.split(" ")
+        if len(parts) == 2:
+            coin = parts[1].upper()
+            return calculate_total_holdings_for_coin(coin)
+        elif len(parts) == 3:
+            person = parts[1].lower()
+            coin = parts[2].upper()
+            return calculate_total_holdings_for_person_and_coin(person, coin)
+        else:
+            return "Invalid format. Use /holdings COIN or /holdings PERSON COIN"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /holdings command: {e}"
 
 def process_add_command(command):
     try:
@@ -88,14 +102,10 @@ def process_add_command(command):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
 
-        # Ensure the master sheet exists
         create_sheet_if_not_exists("Master")
-
-        # Ensure coin and person sheets exist
         create_sheet_if_not_exists(coin)
         create_sheet_if_not_exists(person)
 
-        # Append to Master Sheet
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range="Master!A2",
@@ -103,7 +113,6 @@ def process_add_command(command):
             body={"values": [new_row]}
         ).execute()
 
-        # Append to Coin Sheet
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{coin}!A2",
@@ -111,7 +120,6 @@ def process_add_command(command):
             body={"values": [new_row]}
         ).execute()
 
-        # Append to Person Sheet
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{person}!A2",
@@ -124,6 +132,28 @@ def process_add_command(command):
         traceback.print_exc()
         return f"Error processing /add command: {e}"
 
+def calculate_average(coin):
+    try:
+        sheet = sheets_service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
+        data = result.get("values", [])
+
+        total_quantity = 0
+        total_cost = 0
+
+        for row in data:
+            quantity = float(row[4])
+            total_cost += float(row[6])
+            total_quantity += quantity
+
+        if total_quantity == 0:
+            return f"📊 No valid entries for {coin}."
+
+        average_price = total_cost / total_quantity
+        return f"📊 Average price for {coin}: ${average_price:.2f} (Total held: {total_quantity})"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating average for {coin}: {e}"
 
 def create_sheet_if_not_exists(sheet_name):
     """Check if a sheet exists, if not, create it."""
@@ -149,44 +179,6 @@ def create_sheet_if_not_exists(sheet_name):
     except Exception as e:
         traceback.print_exc()
 
-
-def process_average_command(command):
-    try:
-        parts = command.split(" ")
-        if len(parts) != 2:
-            return "Invalid format. Use: /average COIN"
-
-        coin = parts[1].upper()
-        return calculate_average(coin)
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error processing /average command: {e}"
-
-
-def calculate_average(coin):
-    try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
-        data = result.get("values", [])
-
-        total_quantity = 0
-        total_cost = 0
-
-        for row in data:
-            quantity = float(row[4])
-            total_cost += float(row[6])
-            total_quantity += quantity
-
-        if total_quantity == 0:
-            return f"📊 No valid entries for {coin}."
-
-        average_price = total_cost / total_quantity
-        return f"📊 Average price for {coin}: ${average_price:.2f} (Total held: {total_quantity})"
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating average for {coin}: {e}"
-
-
 def send_telegram_message(chat_id, text):
     """Send a message back to the user via Telegram"""
     try:
@@ -196,7 +188,6 @@ def send_telegram_message(chat_id, text):
         response.raise_for_status()
     except Exception as e:
         print(f"Failed to send message: {e}")
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
