@@ -1,6 +1,7 @@
 import os
 import json
 import traceback
+import datetime  # Import datetime to generate timestamps
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -81,6 +82,9 @@ def process_add_command(command):
         if price <= 0 or quantity <= 0:
             return "Invalid price/quantity. Use positive numbers."
 
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         # Check for duplicates and record trade
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range="Trades!A2:G").execute()
@@ -96,8 +100,8 @@ def process_add_command(command):
             ):
                 return f"⚠️ Duplicate entry detected for {person} - {coin}. Trade not recorded."
 
-        # Append the new row
-        new_row = [person, coin, price, quantity, exchange, price * quantity]
+        # Append the new row with timestamp
+        new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity]
         sheet.values().append(
             spreadsheetId=SPREADSHEET_ID,
             range="Trades!A2",
@@ -130,8 +134,8 @@ def process_average_command(command):
 
         for row in data:
             if row[2].strip().upper() == coin:
-                quantity = float(row[3])
-                total_cost += float(row[5])
+                quantity = float(row[4])
+                total_cost += float(row[6])
                 total_quantity += quantity
 
         if total_quantity == 0:
