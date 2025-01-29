@@ -125,38 +125,8 @@ def process_add_command(command):
         return f"Error processing /add command: {e}"
 
 
-def process_average_command(command):
-    try:
-        parts = command.split(" ")
-        if len(parts) != 2:
-            return "Invalid format. Use: /average COIN"
-
-        coin = parts[1].upper()
-        return calculate_average(coin)
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error processing /average command: {e}"
-
-
-def process_holdings_command(command):
-    try:
-        parts = command.split(" ")
-
-        if len(parts) == 2:
-            coin = parts[1].upper()
-            return calculate_total_holdings_for_coin(coin)
-        elif len(parts) == 3:
-            person = parts[1].lower()
-            coin = parts[2].upper()
-            return calculate_total_holdings_for_person_and_coin(person, coin)
-        else:
-            return "Invalid format. Use /holdings COIN or /holdings PERSON COIN"
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error processing /holdings command: {e}"
-
-
 def create_sheet_if_not_exists(sheet_name):
+    """Check if a sheet exists, if not, create it."""
     try:
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
         sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
@@ -178,6 +148,43 @@ def create_sheet_if_not_exists(sheet_name):
             ).execute()
     except Exception as e:
         traceback.print_exc()
+
+
+def process_average_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 2:
+            return "Invalid format. Use: /average COIN"
+
+        coin = parts[1].upper()
+        return calculate_average(coin)
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /average command: {e}"
+
+
+def calculate_average(coin):
+    try:
+        sheet = sheets_service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
+        data = result.get("values", [])
+
+        total_quantity = 0
+        total_cost = 0
+
+        for row in data:
+            quantity = float(row[4])
+            total_cost += float(row[6])
+            total_quantity += quantity
+
+        if total_quantity == 0:
+            return f"📊 No valid entries for {coin}."
+
+        average_price = total_cost / total_quantity
+        return f"📊 Average price for {coin}: ${average_price:.2f} (Total held: {total_quantity})"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating average for {coin}: {e}"
 
 
 def send_telegram_message(chat_id, text):
