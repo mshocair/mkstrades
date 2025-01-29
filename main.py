@@ -1,7 +1,7 @@
 import os
 import json
 import traceback
-import datetime  # Import datetime to generate timestamps
+import datetime
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -34,7 +34,6 @@ def index():
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    """Handle incoming Telegram updates via webhook"""
     try:
         update = request.get_json()
         print(f"Received update: {update}")
@@ -67,17 +66,50 @@ def telegram_webhook():
         return "error", 500
 
 
+def process_add_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 7:
+            return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
+
+        person = parts[1]
+        coin = parts[2].upper()
+        price = float(parts[3])
+        quantity = float(parts[4])
+        exchange = parts[5]
+        order_type = parts[6].upper()
+
+        if order_type not in ["BUY", "SELL"]:
+            return "Invalid order type. Use BUY or SELL."
+
+        if price <= 0 or quantity <= 0:
+            return "Invalid price/quantity. Use positive numbers."
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
+
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /add command: {e}"
+
+
 def process_holdings_command(command):
-    """Process the /holdings command to calculate total holdings"""
     try:
         parts = command.split(" ")
         
         if len(parts) == 2:
-            # Total holdings for a coin
             coin = parts[1].upper()
             return calculate_total_holdings_for_coin(coin)
         elif len(parts) == 3:
-            # Total holdings for a person and a coin
             person = parts[1].lower()
             coin = parts[2].upper()
             return calculate_total_holdings_for_person_and_coin(person, coin)
@@ -89,9 +121,7 @@ def process_holdings_command(command):
 
 
 def calculate_total_holdings_for_coin(coin):
-    """Calculate the total holdings for a specific coin"""
     try:
-        # Retrieve data from the coin sheet
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
         data = result.get("values", [])
@@ -123,9 +153,7 @@ def calculate_total_holdings_for_coin(coin):
 
 
 def calculate_total_holdings_for_person_and_coin(person, coin):
-    """Calculate the total holdings for a specific person and coin"""
     try:
-        # Retrieve data from the person's sheet
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{person}!A2:H").execute()
         data = result.get("values", [])
@@ -158,7 +186,6 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
 
 
 def send_telegram_message(chat_id, text):
-    """Send a message back to the user via Telegram"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
