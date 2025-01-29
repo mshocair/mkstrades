@@ -202,45 +202,67 @@ def send_telegram_message(chat_id, text):
         print(f"Failed to send message: {e}")
 
 
-def calculate_average(coin):
+# Add this helper function near other utility functions
+def get_average_buy_price(coin, person=None):
+    """Calculate average buy price for a coin (optionally filtered by person)"""
     try:
-        sheet_name = coin
+        if person:
+            sheet_name = person
+            range_name = f"{sheet_name}!A2:H"
+        else:
+            sheet_name = coin
+            range_name = f"{sheet_name}!A2:H"
+
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A2:H",
-            valueRenderOption="UNFORMATTED_VALUE"  # Get raw numbers
+            range=range_name,
+            valueRenderOption="UNFORMATTED_VALUE"
         ).execute()
         values = result.get('values', [])
 
-        total_quantity = 0.0
         total_cost = 0.0
+        total_quantity = 0.0
+        filtered_rows = []
 
-        for row in values:
-            if len(row) >= 8 and row[7].upper() == "BUY":
-                try:
-                    # Use pre-calculated total from column 6 (index 6)
-                    total = float(row[6])
-                    quantity = float(row[4])
-                    total_cost += total
-                    total_quantity += quantity
-                except (ValueError, IndexError):
-                    continue
+        if person:
+            # Filter person's transactions for specific coin and BUY type
+            filtered_rows = [
+                row for row in values
+                if len(row) >= 8 
+                and row[2].upper() == coin 
+                and row[7].upper() == "BUY"
+            ]
+        else:
+            # Filter all BUY transactions for the coin
+            filtered_rows = [
+                row for row in values
+                if len(row) >= 8 
+                and row[7].upper() == "BUY"
+            ]
+
+        for row in filtered_rows:
+            try:
+                total = float(row[6])  # Pre-calculated total (price * quantity)
+                quantity = float(row[4])
+                total_cost += total
+                total_quantity += quantity
+            except (ValueError, IndexError):
+                continue
 
         if total_quantity == 0:
-            return f"No BUY transactions found for {coin}."
+            return None, "No BUY transactions found"
 
-        average_price = total_cost / total_quantity
-        return f"Average buy price for {coin}: ${average_price:.2f}"
+        return total_cost / total_quantity, None
+
     except HttpError as e:
         if e.resp.status == 404:
-            return f"No data found for {coin}."
-        else:
-            traceback.print_exc()
-            return f"Error accessing sheet: {e}"
+            return None, "Sheet not found"
+        return None, f"API Error: {e}"
     except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating average: {e}"
+        return None, f"Calculation Error: {e}"
 
+
+# Modified holdings functions
 def calculate_total_holdings_for_coin(coin):
     try:
         sheet_name = coin
@@ -252,29 +274,31 @@ def calculate_total_holdings_for_coin(coin):
         values = result.get('values', [])
 
         total_quantity = 0.0
-
         for row in values:
             if len(row) >= 8:
                 order_type = row[7].upper()
                 try:
                     quantity = float(row[4])
-                    if order_type == "BUY":
-                        total_quantity += quantity
-                    elif order_type == "SELL":
-                        total_quantity -= quantity
+                    total_quantity += quantity if order_type == "BUY" else -quantity
                 except (ValueError, IndexError):
                     continue
 
-        return f"Total holdings for {coin}: {total_quantity:.8f}"
+        avg_price, avg_error = get_average_buy_price(coin)
+        usd_value = total_quantity * avg_price if avg_price else None
+
+        response = f"Total holdings for {coin}: {total_quantity:.8f}"
+        if usd_value is not None:
+            response += f"\nUSD Value: ${usd_value:.2f} (based on average buy price)"
+        elif avg_error:
+            response += f"\nUSD Value: Calculation failed ({avg_error})"
+        
+        return response
+
     except HttpError as e:
-        if e.resp.status == 404:
-            return f"No data found for {coin}."
-        else:
-            traceback.print_exc()
-            return f"Error accessing sheet: {e}"
+        return f"Error accessing sheet: {e}"
     except Exception as e:
-        traceback.print_exc()
         return f"Error calculating holdings: {e}"
+
 
 def calculate_total_holdings_for_person_and_coin(person, coin):
     try:
@@ -287,30 +311,29 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
         values = result.get('values', [])
 
         total_quantity = 0.0
-
         for row in values:
-            if len(row) >= 8:
-                row_coin = row[2].upper()
+            if len(row) >= 8 and row[2].upper() == coin:
                 order_type = row[7].upper()
-                if row_coin == coin:
-                    try:
-                        quantity = float(row[4])
-                        if order_type == "BUY":
-                            total_quantity += quantity
-                        elif order_type == "SELL":
-                            total_quantity -= quantity
-                    except (ValueError, IndexError):
-                        continue
+                try:
+                    quantity = float(row[4])
+                    total_quantity += quantity if order_type == "BUY" else -quantity
+                except (ValueError, IndexError):
+                    continue
 
-        return f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
+        avg_price, avg_error = get_average_buy_price(coin, person=person)
+        usd_value = total_quantity * avg_price if avg_price else None
+
+        response = f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
+        if usd_value is not None:
+            response += f"\nUSD Value: ${usd_value:.2f} (based on personal average buy price)"
+        elif avg_error:
+            response += f"\nUSD Value: Calculation failed ({avg_error})"
+        
+        return response
+
     except HttpError as e:
-        if e.resp.status == 404:
-            return f"No data found for {person}."
-        else:
-            traceback.print_exc()
-            return f"Error accessing sheet: {e}"
+        return f"Error accessing sheet: {e}"
     except Exception as e:
-        traceback.print_exc()
         return f"Error calculating holdings: {e}"
 
 
