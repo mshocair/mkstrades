@@ -207,7 +207,8 @@ def calculate_average(coin):
         sheet_name = coin
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A2:H"
+            range=f"{sheet_name}!A2:H",
+            valueRenderOption="UNFORMATTED_VALUE"  # Get raw numbers
         ).execute()
         values = result.get('values', [])
 
@@ -217,12 +218,13 @@ def calculate_average(coin):
         for row in values:
             if len(row) >= 8 and row[7].upper() == "BUY":
                 try:
-                    price = float(row[3])
+                    # Use pre-calculated total from column 6 (index 6)
+                    total = float(row[6])
                     quantity = float(row[4])
-                    total_cost += price * quantity
+                    total_cost += total
                     total_quantity += quantity
-                except ValueError:
-                    continue  # Skip rows with invalid data
+                except (ValueError, IndexError):
+                    continue
 
         if total_quantity == 0:
             return f"No BUY transactions found for {coin}."
@@ -239,13 +241,13 @@ def calculate_average(coin):
         traceback.print_exc()
         return f"Error calculating average: {e}"
 
-
 def calculate_total_holdings_for_coin(coin):
     try:
         sheet_name = coin
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A2:H"
+            range=f"{sheet_name}!A2:H",
+            valueRenderOption="UNFORMATTED_VALUE"
         ).execute()
         values = result.get('values', [])
 
@@ -260,8 +262,8 @@ def calculate_total_holdings_for_coin(coin):
                         total_quantity += quantity
                     elif order_type == "SELL":
                         total_quantity -= quantity
-                except ValueError:
-                    continue  # Skip invalid quantity
+                except (ValueError, IndexError):
+                    continue
 
         return f"Total holdings for {coin}: {total_quantity:.8f}"
     except HttpError as e:
@@ -274,13 +276,13 @@ def calculate_total_holdings_for_coin(coin):
         traceback.print_exc()
         return f"Error calculating holdings: {e}"
 
-
 def calculate_total_holdings_for_person_and_coin(person, coin):
     try:
         sheet_name = person
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A2:H"
+            range=f"{sheet_name}!A2:H",
+            valueRenderOption="UNFORMATTED_VALUE"
         ).execute()
         values = result.get('values', [])
 
@@ -297,8 +299,8 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
                             total_quantity += quantity
                         elif order_type == "SELL":
                             total_quantity -= quantity
-                    except ValueError:
-                        continue  # Skip invalid quantity
+                    except (ValueError, IndexError):
+                        continue
 
         return f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
     except HttpError as e:
