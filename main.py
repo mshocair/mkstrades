@@ -72,7 +72,7 @@ def process_add_command(command):
         if len(parts) != 7:
             return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
 
-        person = parts[1]
+        person = parts[1].lower()
         coin = parts[2].upper()
         price = float(parts[3])
         quantity = float(parts[4])
@@ -86,12 +86,35 @@ def process_add_command(command):
             return "Invalid price/quantity. Use positive numbers."
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
 
+        # Ensure the master sheet exists
+        create_sheet_if_not_exists("Master")
+
+        # Ensure coin and person sheets exist
+        create_sheet_if_not_exists(coin)
+        create_sheet_if_not_exists(person)
+
+        # Append to Master Sheet
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Coin Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{coin}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Person Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{person}!A2",
             valueInputOption="USER_ENTERED",
             body={"values": [new_row]}
         ).execute()
@@ -118,6 +141,30 @@ def process_holdings_command(command):
     except Exception as e:
         traceback.print_exc()
         return f"Error processing /holdings command: {e}"
+
+
+def create_sheet_if_not_exists(sheet_name):
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+
+        if sheet_name not in sheet_titles:
+            requests_body = {
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name
+                            }
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID, body=requests_body
+            ).execute()
+    except Exception as e:
+        traceback.print_exc()
 
 
 def calculate_total_holdings_for_coin(coin):
@@ -150,39 +197,6 @@ def calculate_total_holdings_for_coin(coin):
     except Exception as e:
         traceback.print_exc()
         return f"Error calculating holdings for {coin}: {e}"
-
-
-def calculate_total_holdings_for_person_and_coin(person, coin):
-    try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{person}!A2:H").execute()
-        data = result.get("values", [])
-
-        total_quantity = 0
-        total_cost = 0
-
-        for row in data:
-            if row[2].strip().upper() == coin:
-                quantity = float(row[4])
-                price = float(row[3])
-
-                if row[7].strip().upper() == "BUY":
-                    total_quantity += quantity
-                    total_cost += quantity * price
-                elif row[7].strip().upper() == "SELL":
-                    total_quantity -= quantity
-                    total_cost -= quantity * price
-
-        if total_quantity == 0:
-            return f"📊 No holdings for {person} in {coin}."
-
-        average_price = total_cost / total_quantity
-        total_value_usd = total_quantity * average_price
-
-        return f"📊 Holdings for {person} in {coin}:\n- Quantity: {total_quantity:.4f}\n- Total Value (USD): ${total_value_usd:.2f}\n- Average Price: ${average_price:.2f}"
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating holdings for {person} in {coin}: {e}"
 
 
 def send_telegram_message(chat_id, text):
