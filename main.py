@@ -15,6 +15,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
 
+# Environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
+SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
+
 # Load Google Sheets API credentials
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
     raise ValueError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
@@ -26,7 +31,113 @@ try:
     sheets_service = build("sheets", "v4", credentials=creds)
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
+# New keyboard functions
+def get_main_keyboard():
+    """Create a persistent reply keyboard"""
+    return {
+        "keyboard": [
+            [{"text": "/add"}, {"text": "/average"}],
+            [{"text": "/holdings"}, {"text": "/help"}]
+        ],
+        "resize_keyboard": True,
+        "persistent": True
+    }
 
+def get_inline_keyboard():
+    """Create an inline keyboard for quick actions"""
+    return {
+        "inline_keyboard": [
+            [{"text": "➕ Add Trade", "callback_data": "/add"}],
+            [
+                {"text": "📊 Holdings", "callback_data": "/holdings"},
+                {"text": "💵 Average Price", "callback_data": "/average"}
+            ]
+        ]
+    }
+
+@app.route("/")
+def index():
+    return "Hello from Render + Python + Google Sheets!"
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        update = request.get_json()
+        print(f"Received update: {update}")
+
+        # Handle inline keyboard callbacks
+        if 'callback_query' in update:
+            callback = update['callback_query']
+            chat_id = callback['message']['chat']['id']
+            data = callback['data']
+            
+            # Send quick response
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                json={"callback_query_id": callback['id']}
+            )
+            
+            # Process the callback data
+            if data == "/add":
+                send_telegram_message(chat_id, "Use format:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL")
+            elif data == "/average":
+                send_telegram_message(chat_id, "Enter coin:\n/average COIN")
+            elif data == "/holdings":
+                send_telegram_message(chat_id, "Choose:\n/holdings COIN\nor\n/holdings PERSON COIN")
+            
+            return "ok", 200
+
+        # Handle regular messages
+        message = update.get("message")
+        if not message:
+            return "ok", 200
+
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+
+        if text.startswith("/start"):
+            welcome_msg = "Welcome to Crypto Tracker Bot! Choose an action:"
+            send_telegram_message(chat_id, welcome_msg, get_inline_keyboard())
+            send_telegram_message(chat_id, "Or use these quick commands:", get_main_keyboard())
+        elif text.startswith("/help"):
+            help_text = """📚 Available Commands:
+            /add - Record new trade
+            /average - Check average price
+            /holdings - View holdings
+            """
+            send_telegram_message(chat_id, help_text)
+        elif text.startswith("/add"):
+            response = process_add_command(text)
+            send_telegram_message(chat_id, response)
+        elif text.startswith("/average"):
+            response = process_average_command(text)
+            send_telegram_message(chat_id, response)
+        elif text.startswith("/holdings"):
+            response = process_holdings_command(text)
+            send_telegram_message(chat_id, response)
+        else:
+            send_telegram_message(chat_id, "❌ Unknown command. Use buttons or type /help")
+
+        return "ok", 200
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Error in telegram_webhook: {e}")
+        return "error", 500
+
+def send_telegram_message(chat_id, text, reply_markup=None):
+    """Send a message with optional keyboard"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send message: {e}")
 
 @app.route("/")
 def index():
