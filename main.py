@@ -27,9 +27,11 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
 
+
 @app.route("/")
 def index():
     return "Hello from Render + Python + Google Sheets!"
+
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
@@ -42,7 +44,7 @@ def telegram_webhook():
             return "ok", 200
 
         chat_id = message.get("chat", {}).get("id")
-        text = message.get("text", "").strip()
+        text = message.get("text", "")
 
         if text.startswith("/start"):
             send_telegram_message(chat_id, "Welcome to Crypto Tracker Bot!\nCommands:\n/add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL\n/average COIN\n/holdings COIN\n/holdings PERSON COIN")
@@ -61,11 +63,13 @@ def telegram_webhook():
         return "ok", 200
     except Exception as e:
         traceback.print_exc()
+        print(f"Error in telegram_webhook: {e}")
         return "error", 500
+
 
 def process_add_command(command):
     try:
-        parts = command.split()
+        parts = command.split(" ")
         if len(parts) != 7:
             return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
 
@@ -85,24 +89,46 @@ def process_add_command(command):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
 
-        # Ensure sheets exist with headers
+        # Ensure the master sheet exists with headers
         create_sheet_if_not_exists("Master")
+
+        # Ensure coin and person sheets exist with headers
         create_sheet_if_not_exists(coin)
         create_sheet_if_not_exists(person)
 
-        # Append to Master, Coin, and Person Sheets
-        append_to_sheet("Master", new_row)
-        append_to_sheet(coin, new_row)
-        append_to_sheet(person, new_row)
+        # Append to Master Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Coin Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{coin}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Person Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{person}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
 
         return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
     except Exception as e:
         traceback.print_exc()
         return f"Error processing /add command: {e}"
 
+
 def process_average_command(command):
     try:
-        parts = command.split()
+        parts = command.split(" ")
         if len(parts) != 2:
             return "Invalid format. Use: /average COIN"
 
@@ -112,9 +138,10 @@ def process_average_command(command):
         traceback.print_exc()
         return f"Error processing /average command: {e}"
 
+
 def process_holdings_command(command):
     try:
-        parts = command.split()
+        parts = command.split(" ")
 
         if len(parts) == 2:
             coin = parts[1].upper()
@@ -129,66 +156,161 @@ def process_holdings_command(command):
         traceback.print_exc()
         return f"Error processing /holdings command: {e}"
 
+
 def create_sheet_if_not_exists(sheet_name):
     try:
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
         sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
 
         if sheet_name not in sheet_titles:
+            # Create the new sheet
             requests_body = {
                 "requests": [
                     {
                         "addSheet": {
-                            "properties": {"title": sheet_name}
+                            "properties": {
+                                "title": sheet_name
+                            }
                         }
                     }
                 ]
             }
-            sheets_service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=requests_body).execute()
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID, body=requests_body
+            ).execute()
             
+            # Add headers to the new sheet
             headers = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total", "Type"]
-            append_to_sheet(sheet_name, headers, is_header=True)
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{sheet_name}!A1",
+                valueInputOption="RAW",
+                body={"values": [headers]}
+            ).execute()
     except Exception as e:
         traceback.print_exc()
 
-def append_to_sheet(sheet_name, row_values, is_header=False):
-    """Appends a row to the specified sheet."""
-    try:
-        range_name = f"{sheet_name}!A1" if is_header else f"{sheet_name}!A2"
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=range_name,
-            valueInputOption="USER_ENTERED",
-            body={"values": [row_values]}
-        ).execute()
-    except Exception as e:
-        traceback.print_exc()
 
 def send_telegram_message(chat_id, text):
     """Send a message back to the user via Telegram"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text}).raise_for_status()
+        payload = {"chat_id": chat_id, "text": text}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
     except Exception as e:
         print(f"Failed to send message: {e}")
 
+
 def calculate_average(coin):
     try:
-        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
-        data = result.get('values', [])
+        sheet_name = coin
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
 
-        total_quantity = total_cost = 0.0
-        for row in data:
-            if row[7].upper() == "BUY":
-                total_quantity += float(row[4])
-                total_cost += float(row[6])
+        total_quantity = 0.0
+        total_cost = 0.0
 
-        return f"📊 Average price for {coin}: ${total_cost / total_quantity:.2f}" if total_quantity else f"No BUY transactions for {coin}."
-    except HttpError:
-        return f"No data found for {coin}."
+        for row in values:
+            if len(row) >= 8 and row[7].upper() == "BUY":
+                try:
+                    price = float(row[3])
+                    quantity = float(row[4])
+                    total_cost += price * quantity
+                    total_quantity += quantity
+                except ValueError:
+                    continue  # Skip rows with invalid data
+
+        if total_quantity == 0:
+            return f"No BUY transactions found for {coin}."
+
+        average_price = total_cost / total_quantity
+        return f"Average buy price for {coin}: ${average_price:.2f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {coin}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
     except Exception as e:
         traceback.print_exc()
         return f"Error calculating average: {e}"
+
+
+def calculate_total_holdings_for_coin(coin):
+    try:
+        sheet_name = coin
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
+
+        total_quantity = 0.0
+
+        for row in values:
+            if len(row) >= 8:
+                order_type = row[7].upper()
+                try:
+                    quantity = float(row[4])
+                    if order_type == "BUY":
+                        total_quantity += quantity
+                    elif order_type == "SELL":
+                        total_quantity -= quantity
+                except ValueError:
+                    continue  # Skip invalid quantity
+
+        return f"Total holdings for {coin}: {total_quantity:.8f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {coin}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating holdings: {e}"
+
+
+def calculate_total_holdings_for_person_and_coin(person, coin):
+    try:
+        sheet_name = person
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
+
+        total_quantity = 0.0
+
+        for row in values:
+            if len(row) >= 8:
+                row_coin = row[2].upper()
+                order_type = row[7].upper()
+                if row_coin == coin:
+                    try:
+                        quantity = float(row[4])
+                        if order_type == "BUY":
+                            total_quantity += quantity
+                        elif order_type == "SELL":
+                            total_quantity -= quantity
+                    except ValueError:
+                        continue  # Skip invalid quantity
+
+        return f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {person}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating holdings: {e}"
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
