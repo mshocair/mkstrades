@@ -64,6 +64,50 @@ def telegram_webhook():
         return "error", 500
 
 
+def create_sheet_for_coin(coin):
+    """Create a new sheet for the given coin if it does not exist"""
+    try:
+        # Get the list of existing sheets
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+
+        # Check if the sheet already exists
+        if coin not in sheet_titles:
+            # Add a new sheet for the coin
+            requests_body = {
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": coin,
+                                "gridProperties": {
+                                    "rowCount": 1000,  # Default row count
+                                    "columnCount": 7   # Columns: Timestamp, Person, Coin, Price, Quantity, Exchange, Total Cost, Order Type
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID, body=requests_body
+            ).execute()
+
+            # Add headers to the new sheet
+            header_row = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total Cost", "Order Type"]
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{coin}!A1",
+                valueInputOption="USER_ENTERED",
+                body={"values": [header_row]}
+            ).execute()
+
+        return True
+    except Exception as e:
+        traceback.print_exc()
+        return False
+
+
 def process_add_command(command):
     """Process the /add command to record a trade with buy/sell tracking"""
     try:
@@ -86,27 +130,15 @@ def process_add_command(command):
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Check for duplicates
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range="Trades!A2:H").execute()
-        existing_data = result.get("values", [])
+        # Create a new sheet for the coin if it doesn't exist
+        if not create_sheet_for_coin(coin):
+            return f"Error creating sheet for {coin}."
 
-        for row in existing_data:
-            if (
-                row[1].strip().lower() == person.strip().lower() and
-                row[2].strip().upper() == coin and
-                row[3] == str(price) and
-                row[4] == str(quantity) and
-                row[5].strip().lower() == exchange.strip().lower() and
-                row[6].strip().upper() == order_type
-            ):
-                return f"⚠️ Duplicate entry detected for {person} - {coin} ({order_type}). Trade not recorded."
-
-        # Append new trade with order type
+        # Append the new row with order type
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
-        sheet.values().append(
+        sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range="Trades!A2",
+            range=f"{coin}!A2",
             valueInputOption="USER_ENTERED",
             body={"values": [new_row]}
         ).execute()
@@ -128,14 +160,14 @@ def process_average_command(command):
 
         # Retrieve data from the sheet
         sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range="Trades!A2:H").execute()
+        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
         data = result.get("values", [])
 
         total_quantity = 0
         total_cost = 0
 
         for row in data:
-            if row[2].strip().upper() == coin and row[7].strip().upper() == "BUY":
+            if row[7].strip().upper() == "BUY":
                 quantity = float(row[4])
                 total_cost += float(row[6])
                 total_quantity += quantity
