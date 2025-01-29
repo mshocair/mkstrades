@@ -6,6 +6,7 @@ from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests
+from googleapiclient.errors import HttpError
 
 app = Flask(__name__)
 
@@ -88,10 +89,10 @@ def process_add_command(command):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
 
-        # Ensure the master sheet exists
+        # Ensure the master sheet exists with headers
         create_sheet_if_not_exists("Master")
 
-        # Ensure coin and person sheets exist
+        # Ensure coin and person sheets exist with headers
         create_sheet_if_not_exists(coin)
         create_sheet_if_not_exists(person)
 
@@ -162,6 +163,7 @@ def create_sheet_if_not_exists(sheet_name):
         sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
 
         if sheet_name not in sheet_titles:
+            # Create the new sheet
             requests_body = {
                 "requests": [
                     {
@@ -175,6 +177,15 @@ def create_sheet_if_not_exists(sheet_name):
             }
             sheets_service.spreadsheets().batchUpdate(
                 spreadsheetId=SPREADSHEET_ID, body=requests_body
+            ).execute()
+            
+            # Add headers to the new sheet
+            headers = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total", "Type"]
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{sheet_name}!A1",
+                valueInputOption="RAW",
+                body={"values": [headers]}
             ).execute()
     except Exception as e:
         traceback.print_exc()
@@ -191,6 +202,115 @@ def send_telegram_message(chat_id, text):
         print(f"Failed to send message: {e}")
 
 
+def calculate_average(coin):
+    try:
+        sheet_name = coin
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
+
+        total_quantity = 0.0
+        total_cost = 0.0
+
+        for row in values:
+            if len(row) >= 8 and row[7].upper() == "BUY":
+                try:
+                    price = float(row[3])
+                    quantity = float(row[4])
+                    total_cost += price * quantity
+                    total_quantity += quantity
+                except ValueError:
+                    continue  # Skip rows with invalid data
+
+        if total_quantity == 0:
+            return f"No BUY transactions found for {coin}."
+
+        average_price = total_cost / total_quantity
+        return f"Average buy price for {coin}: ${average_price:.2f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {coin}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating average: {e}"
+
+
+def calculate_total_holdings_for_coin(coin):
+    try:
+        sheet_name = coin
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
+
+        total_quantity = 0.0
+
+        for row in values:
+            if len(row) >= 8:
+                order_type = row[7].upper()
+                try:
+                    quantity = float(row[4])
+                    if order_type == "BUY":
+                        total_quantity += quantity
+                    elif order_type == "SELL":
+                        total_quantity -= quantity
+                except ValueError:
+                    continue  # Skip invalid quantity
+
+        return f"Total holdings for {coin}: {total_quantity:.8f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {coin}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating holdings: {e}"
+
+
+def calculate_total_holdings_for_person_and_coin(person, coin):
+    try:
+        sheet_name = person
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H"
+        ).execute()
+        values = result.get('values', [])
+
+        total_quantity = 0.0
+
+        for row in values:
+            if len(row) >= 8:
+                row_coin = row[2].upper()
+                order_type = row[7].upper()
+                if row_coin == coin:
+                    try:
+                        quantity = float(row[4])
+                        if order_type == "BUY":
+                            total_quantity += quantity
+                        elif order_type == "SELL":
+                            total_quantity -= quantity
+                    except ValueError:
+                        continue  # Skip invalid quantity
+
+        return f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
+    except HttpError as e:
+        if e.resp.status == 404:
+            return f"No data found for {person}."
+        else:
+            traceback.print_exc()
+            return f"Error accessing sheet: {e}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error calculating holdings: {e}"
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
