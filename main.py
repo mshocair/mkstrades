@@ -202,16 +202,56 @@ def send_telegram_message(chat_id, text):
         print(f"Failed to send message: {e}")
 
 
-# Add this helper function near other utility functions
+# Add this helper function with other utility functions
+def sheet_exists(sheet_name):
+    """Check if a sheet with given name exists"""
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_ID
+        ).execute()
+        return any(sheet["properties"]["title"].lower() == sheet_name.lower() 
+                 for sheet in spreadsheet.get("sheets", []))
+    except Exception as e:
+        traceback.print_exc()
+        return False
+
+
+# Updated process_average_command (add this with other process_* functions)
+def process_average_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 2:
+            return "Invalid format. Use: /average COIN"
+
+        coin = parts[1].upper()
+        avg_price, error = get_average_buy_price(coin)
+        
+        if error:
+            return f"Can't calculate average for {coin}: {error}"
+        elif avg_price is None:
+            return f"No buy transactions found for {coin}"
+            
+        return f"Average buy price for {coin}: ${avg_price:.2f}"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /average command: {e}"
+
+# Updated get_average_buy_price function
 def get_average_buy_price(coin, person=None):
     """Calculate average buy price for a coin (optionally filtered by person)"""
     try:
         if person:
+            if not sheet_exists(person):
+                return None, f"Person '{person}' not found"
             sheet_name = person
             range_name = f"{sheet_name}!A2:H"
+            filter_coin = True
         else:
+            if not sheet_exists(coin):
+                return None, f"Coin '{coin}' not found"
             sheet_name = coin
             range_name = f"{sheet_name}!A2:H"
+            filter_coin = False
 
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
@@ -225,7 +265,6 @@ def get_average_buy_price(coin, person=None):
         filtered_rows = []
 
         if person:
-            # Filter person's transactions for specific coin and BUY type
             filtered_rows = [
                 row for row in values
                 if len(row) >= 8 
@@ -233,7 +272,6 @@ def get_average_buy_price(coin, person=None):
                 and row[7].upper() == "BUY"
             ]
         else:
-            # Filter all BUY transactions for the coin
             filtered_rows = [
                 row for row in values
                 if len(row) >= 8 
@@ -242,7 +280,7 @@ def get_average_buy_price(coin, person=None):
 
         for row in filtered_rows:
             try:
-                total = float(row[6])  # Pre-calculated total (price * quantity)
+                total = float(row[6])
                 quantity = float(row[4])
                 total_cost += total
                 total_quantity += quantity
@@ -261,10 +299,12 @@ def get_average_buy_price(coin, person=None):
     except Exception as e:
         return None, f"Calculation Error: {e}"
 
-
-# Modified holdings functions
+# Updated holdings functions
 def calculate_total_holdings_for_coin(coin):
     try:
+        if not sheet_exists(coin):
+            return f"Coin '{coin}' not found"
+
         sheet_name = coin
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
@@ -299,9 +339,11 @@ def calculate_total_holdings_for_coin(coin):
     except Exception as e:
         return f"Error calculating holdings: {e}"
 
-
 def calculate_total_holdings_for_person_and_coin(person, coin):
     try:
+        if not sheet_exists(person):
+            return f"Person '{person}' not found"
+
         sheet_name = person
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
