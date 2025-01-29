@@ -180,61 +180,15 @@ def create_sheet_if_not_exists(sheet_name):
         traceback.print_exc()
 
 
-def calculate_average(coin):
+def send_telegram_message(chat_id, text):
+    """Send a message back to the user via Telegram"""
     try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
-        data = result.get("values", [])
-
-        total_quantity = 0
-        total_cost = 0
-
-        for row in data:
-            quantity = float(row[4])
-            total_cost += float(row[6])
-            total_quantity += quantity
-
-        if total_quantity == 0:
-            return f"📊 No valid entries for {coin}."
-
-        average_price = total_cost / total_quantity
-        return f"📊 Average price for {coin}: ${average_price:.2f} (Total held: {total_quantity})"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
     except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating average for {coin}: {e}"
-
-
-def calculate_total_holdings_for_person_and_coin(person, coin):
-    try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{person}!A2:H").execute()
-        data = result.get("values", [])
-
-        total_quantity = 0
-        total_cost = 0
-
-        for row in data:
-            if row[2].strip().upper() == coin:
-                quantity = float(row[4])
-                price = float(row[3])
-
-                if row[7].strip().upper() == "BUY":
-                    total_quantity += quantity
-                    total_cost += quantity * price
-                elif row[7].strip().upper() == "SELL":
-                    total_quantity -= quantity
-                    total_cost -= quantity * price
-
-        if total_quantity == 0:
-            return f"📊 No holdings for {person} in {coin}."
-
-        average_price = total_cost / total_quantity
-        total_value_usd = total_quantity * average_price
-
-        return f"📊 Holdings for {person} in {coin}:\n- Quantity: {total_quantity:.4f}\n- Total Value (USD): ${total_value_usd:.2f}\n- Average Price: ${average_price:.2f}"
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating holdings for {person} in {coin}: {e}"
+        print(f"Failed to send message: {e}")
 
 
 if __name__ == "__main__":
