@@ -64,25 +64,25 @@ def telegram_webhook():
         return "error", 500
 
 
-def create_sheet_for_coin(coin):
-    """Create a new sheet for the given coin if it does not exist"""
+def create_sheet_if_not_exists(sheet_name):
+    """Create a new sheet if it does not exist"""
     try:
         # Get the list of existing sheets
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
         sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
 
         # Check if the sheet already exists
-        if coin not in sheet_titles:
-            # Add a new sheet for the coin
+        if sheet_name not in sheet_titles:
+            # Add a new sheet
             requests_body = {
                 "requests": [
                     {
                         "addSheet": {
                             "properties": {
-                                "title": coin,
+                                "title": sheet_name,
                                 "gridProperties": {
-                                    "rowCount": 1000,  # Default row count
-                                    "columnCount": 7   # Columns: Timestamp, Person, Coin, Price, Quantity, Exchange, Total Cost, Order Type
+                                    "rowCount": 1000,
+                                    "columnCount": 8  # Columns: Timestamp, Person, Coin, Price, Quantity, Exchange, Total Cost, Order Type
                                 }
                             }
                         }
@@ -97,7 +97,7 @@ def create_sheet_for_coin(coin):
             header_row = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total Cost", "Order Type"]
             sheets_service.spreadsheets().values().append(
                 spreadsheetId=SPREADSHEET_ID,
-                range=f"{coin}!A1",
+                range=f"{sheet_name}!A1",
                 valueInputOption="USER_ENTERED",
                 body={"values": [header_row]}
             ).execute()
@@ -130,15 +130,34 @@ def process_add_command(command):
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Create a new sheet for the coin if it doesn't exist
-        if not create_sheet_for_coin(coin):
-            return f"Error creating sheet for {coin}."
+        # Create sheets for Master, Coin, and Person if they don't exist
+        create_sheet_if_not_exists("Master")
+        create_sheet_if_not_exists(coin)
+        create_sheet_if_not_exists(person)
 
-        # Append the new row with order type
+        # New row data
         new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
+
+        # Append to Master Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Coin Sheet
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{coin}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Person Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{person}!A2",
             valueInputOption="USER_ENTERED",
             body={"values": [new_row]}
         ).execute()
@@ -158,7 +177,7 @@ def process_average_command(command):
 
         coin = parts[1].upper()
 
-        # Retrieve data from the sheet
+        # Retrieve data from the coin sheet
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
         data = result.get("values", [])
@@ -195,3 +214,4 @@ def send_telegram_message(chat_id, text):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
