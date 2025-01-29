@@ -9,17 +9,14 @@ import requests
 
 app = Flask(__name__)
 
-# ---------------- ENVIRONMENT VARIABLES ---------------- #
+# Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
 
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN is missing. Please set it in environment variables!")
-
-# ---------------- GOOGLE SHEETS SETUP ---------------- #
+# Load Google Sheets API credentials
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
-    raise ValueError(f"❌ Service account file not found: {SERVICE_ACCOUNT_FILE}")
+    raise ValueError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
 try:
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
@@ -27,27 +24,19 @@ try:
     )
     sheets_service = build("sheets", "v4", credentials=creds)
 except Exception as e:
-    raise ValueError(f"❌ Failed to load Google Sheets credentials: {e}")
+    raise ValueError(f"Failed to load service account credentials: {e}")
 
-# ---------------- WEBHOOK SETUP ---------------- #
-@app.route("/setWebhook", methods=["GET"])
-def set_webhook():
-    """Manually set the Telegram webhook if needed."""
-    webhook_url = f"https://your-server.com/{BOT_TOKEN}"
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-    response = requests.post(url, json={"url": webhook_url})
-    return response.json()
 
 @app.route("/")
 def index():
-    return f"✅ Crypto Tracker Bot is running! Webhook: /{BOT_TOKEN}"
+    return "Hello from Render + Python + Google Sheets!"
+
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    """Handles incoming Telegram messages."""
     try:
         update = request.get_json()
-        print(f"📩 Received update: {update}")
+        print(f"Received update: {update}")
 
         message = update.get("message")
         if not message:
@@ -68,105 +57,140 @@ def telegram_webhook():
             response = process_holdings_command(text)
             send_telegram_message(chat_id, response)
         else:
-            send_telegram_message(chat_id, "❌ Unknown command. Use /start, /add, /average, or /holdings.")
+            send_telegram_message(chat_id, "Unknown command. Use /start, /add, /average, or /holdings.")
 
         return "ok", 200
     except Exception as e:
         traceback.print_exc()
-        print(f"❌ Error in telegram_webhook: {e}")
+        print(f"Error in telegram_webhook: {e}")
         return "error", 500
 
-# ---------------- GOOGLE SHEETS HELPER FUNCTIONS ---------------- #
+
+def process_add_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 7:
+            return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
+
+        person = parts[1].lower()
+        coin = parts[2].upper()
+        price = float(parts[3])
+        quantity = float(parts[4])
+        exchange = parts[5]
+        order_type = parts[6].upper()
+
+        if order_type not in ["BUY", "SELL"]:
+            return "Invalid order type. Use BUY or SELL."
+
+        if price <= 0 or quantity <= 0:
+            return "Invalid price/quantity. Use positive numbers."
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
+
+        # Ensure the master sheet exists
+        create_sheet_if_not_exists("Master")
+
+        # Ensure coin and person sheets exist
+        create_sheet_if_not_exists(coin)
+        create_sheet_if_not_exists(person)
+
+        # Append to Master Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Coin Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{coin}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Person Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{person}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /add command: {e}"
+
+
+def process_average_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 2:
+            return "Invalid format. Use: /average COIN"
+
+        coin = parts[1].upper()
+        return calculate_average(coin)
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /average command: {e}"
+
+
+def process_holdings_command(command):
+    try:
+        parts = command.split(" ")
+
+        if len(parts) == 2:
+            coin = parts[1].upper()
+            return calculate_total_holdings_for_coin(coin)
+        elif len(parts) == 3:
+            person = parts[1].lower()
+            coin = parts[2].upper()
+            return calculate_total_holdings_for_person_and_coin(person, coin)
+        else:
+            return "Invalid format. Use /holdings COIN or /holdings PERSON COIN"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /holdings command: {e}"
+
+
 def create_sheet_if_not_exists(sheet_name):
-    """Check if a sheet exists, and create it if not."""
     try:
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
         sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
 
         if sheet_name not in sheet_titles:
+            requests_body = {
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name
+                            }
+                        }
+                    }
+                ]
+            }
             sheets_service.spreadsheets().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID,
-                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
+                spreadsheetId=SPREADSHEET_ID, body=requests_body
             ).execute()
     except Exception as e:
-        print(f"⚠️ Error checking/creating sheet {sheet_name}: {e}")
-
-def append_to_sheet(sheet_name, values):
-    """Append a row of data to the given Google Sheet."""
-    try:
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A:A",
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
-            body={"values": [values]}
-        ).execute()
-    except Exception as e:
-        print(f"⚠️ Error appending to sheet {sheet_name}: {e}")
-
-# ---------------- DATA PROCESSING FUNCTIONS ---------------- #
-def calculate_total_holdings_for_person_and_coin(person, coin):
-    """Calculate total holdings of a specific person for a given coin."""
-    try:
-        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{person}!A2:H").execute()
-        data = result.get("values", [])
-
-        total_quantity = sum(
-            float(row[4]) * (1 if row[7].strip().upper() == "BUY" else -1)
-            for row in data if len(row) >= 8 and row[2].upper() == coin
-        )
-
-        return f"📊 {person.capitalize()}'s total holdings for {coin}: {total_quantity:.4f}"
-    except Exception as e:
         traceback.print_exc()
-        return f"❌ Error calculating holdings for {person} and {coin}: {e}"
 
-def calculate_total_holdings_for_coin(coin):
-    """Calculate total holdings for a specific coin."""
-    try:
-        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
-        data = result.get("values", [])
 
-        total_quantity = sum(
-            float(row[4]) * (1 if row[7].strip().upper() == "BUY" else -1)
-            for row in data if len(row) >= 8
-        )
-
-        return f"📊 Total holdings for {coin}: {total_quantity:.4f}"
-    except Exception as e:
-        traceback.print_exc()
-        return f"❌ Error calculating holdings for {coin}: {e}"
-
-def calculate_average(coin):
-    """Calculate the average buy price for a coin."""
-    try:
-        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
-        data = result.get("values", [])
-
-        buy_entries = [row for row in data if len(row) >= 8 and row[7].strip().upper() == "BUY"]
-        total_quantity = sum(float(row[4]) for row in buy_entries)
-        total_cost = sum(float(row[6]) for row in buy_entries)
-
-        if total_quantity == 0:
-            return f"📊 No valid buy entries for {coin}."
-
-        average_price = total_cost / total_quantity
-        return f"📊 Average price for {coin}: ${average_price:.2f} (Total held: {total_quantity})"
-    except Exception as e:
-        traceback.print_exc()
-        return f"❌ Error calculating average for {coin}: {e}"
-
-# ---------------- TELEGRAM API FUNCTIONS ---------------- #
 def send_telegram_message(chat_id, text):
-    """Send a message back to the user via Telegram, handling long messages."""
+    """Send a message back to the user via Telegram"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        for chunk in [text[i:i+4096] for i in range(0, len(text), 4096)]:
-            requests.post(url, json={"chat_id": chat_id, "text": chunk})
+        payload = {"chat_id": chat_id, "text": text}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
     except Exception as e:
-        print(f"⚠️ Failed to send message: {e}")
+        print(f"Failed to send message: {e}")
 
-# ---------------- RUN FLASK APP ---------------- #
+
 if __name__ == "__main__":
-    print(f"✅ Bot is running! Webhook listening at: /{BOT_TOKEN}")
     app.run(host="0.0.0.0", port=5000, debug=True)
+
