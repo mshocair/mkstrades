@@ -64,7 +64,6 @@ def telegram_webhook():
         return "error", 500
 
 def process_holdings_command(command):
-    """Process the /holdings command to calculate total holdings."""
     try:
         parts = command.split(" ")
         if len(parts) == 2:
@@ -106,45 +105,43 @@ def process_add_command(command):
         create_sheet_if_not_exists(coin)
         create_sheet_if_not_exists(person)
 
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range="Master!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
-
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{coin}!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
-
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{person}!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
+        append_to_sheet("Master", new_row)
+        append_to_sheet(coin, new_row)
+        append_to_sheet(person, new_row)
 
         return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
     except Exception as e:
         traceback.print_exc()
         return f"Error processing /add command: {e}"
 
-def calculate_average(coin):
+def process_average_command(command):
     try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
+        parts = command.split(" ")
+        if len(parts) != 2:
+            return "Invalid format. Use: /average COIN"
+
+        coin = parts[1].upper()
+        return calculate_average(coin)
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /average command: {e}"
+
+def calculate_average(coin):
+    """Calculate the average buy price for a coin."""
+    try:
+        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
         data = result.get("values", [])
 
         total_quantity = 0
         total_cost = 0
 
         for row in data:
-            quantity = float(row[4])
-            total_cost += float(row[6])
-            total_quantity += quantity
+            if len(row) < 8:
+                continue
+            if row[7].strip().upper() == "BUY":
+                quantity = float(row[4])
+                total_cost += float(row[6])
+                total_quantity += quantity
 
         if total_quantity == 0:
             return f"📊 No valid entries for {coin}."
@@ -155,37 +152,37 @@ def calculate_average(coin):
         traceback.print_exc()
         return f"Error calculating average for {coin}: {e}"
 
-def create_sheet_if_not_exists(sheet_name):
-    """Check if a sheet exists, if not, create it."""
+def calculate_total_holdings_for_coin(coin):
+    """Calculate total holdings for a specific coin."""
     try:
-        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-        sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+        result = sheets_service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=f"{coin}!A2:H").execute()
+        data = result.get("values", [])
 
-        if sheet_name not in sheet_titles:
-            requests_body = {
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": sheet_name
-                            }
-                        }
-                    }
-                ]
-            }
-            sheets_service.spreadsheets().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID, body=requests_body
-            ).execute()
+        total_quantity = 0
+        for row in data:
+            if len(row) < 8:
+                continue
+            quantity = float(row[4])
+            if row[7].strip().upper() == "BUY":
+                total_quantity += quantity
+            elif row[7].strip().upper() == "SELL":
+                total_quantity -= quantity
+
+        return f"📊 Total holdings for {coin}: {total_quantity:.4f}"
     except Exception as e:
         traceback.print_exc()
+        return f"Error calculating holdings for {coin}: {e}"
 
 def send_telegram_message(chat_id, text):
     """Send a message back to the user via Telegram"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text}
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        if len(text) > 4096:
+            chunks = [text[i:i+4096] for i in range(0, len(text), 4096)]
+            for chunk in chunks:
+                requests.post(url, json={"chat_id": chat_id, "text": chunk})
+        else:
+            requests.post(url, json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"Failed to send message: {e}")
 
