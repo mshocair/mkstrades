@@ -134,7 +134,65 @@ def send_telegram_message(chat_id, text, reply_markup=None):
     except Exception as e:
         print(f"Failed to send message: {e}")
 
-# [Keep all existing functions below exactly as they were]
+# Your existing functions (unchanged)
+def process_add_command(command):
+    try:
+        parts = command.split(" ")
+        if len(parts) != 7:
+            return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
+
+        person = parts[1].lower()
+        coin = parts[2].upper()
+        price = float(parts[3])
+        quantity = float(parts[4])
+        exchange = parts[5]
+        order_type = parts[6].upper()
+
+        if order_type not in ["BUY", "SELL"]:
+            return "Invalid order type. Use BUY or SELL."
+
+        if price <= 0 or quantity <= 0:
+            return "Invalid price/quantity. Use positive numbers."
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
+
+        # Ensure the master sheet exists with headers
+        create_sheet_if_not_exists("Master")
+
+        # Ensure coin and person sheets exist with headers
+        create_sheet_if_not_exists(coin)
+        create_sheet_if_not_exists(person)
+
+        # Append to Master Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Master!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Coin Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{coin}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        # Append to Person Sheet
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{person}!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": [new_row]}
+        ).execute()
+
+        return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /add command: {e}"
+
 def process_average_command(command):
     try:
         parts = command.split(" ")
@@ -142,6 +200,76 @@ def process_average_command(command):
             return "Invalid format. Use: /average COIN"
 
         coin = parts[1].upper()
+        return calculate_average(coin)
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /average command: {e}"
+
+def process_holdings_command(command):
+    try:
+        parts = command.split(" ")
+
+        if len(parts) == 2:
+            coin = parts[1].upper()
+            return calculate_total_holdings_for_coin(coin)
+        elif len(parts) == 3:
+            person = parts[1].lower()
+            coin = parts[2].upper()
+            return calculate_total_holdings_for_person_and_coin(person, coin)
+        else:
+            return "Invalid format. Use /holdings COIN or /holdings PERSON COIN"
+    except Exception as e:
+        traceback.print_exc()
+        return f"Error processing /holdings command: {e}"
+
+def create_sheet_if_not_exists(sheet_name):
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+
+        if sheet_name not in sheet_titles:
+            # Create the new sheet
+            requests_body = {
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name
+                            }
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID, body=requests_body
+            ).execute()
+            
+            # Add headers to the new sheet
+            headers = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total", "Type"]
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{sheet_name}!A1",
+                valueInputOption="RAW",
+                body={"values": [headers]}
+            ).execute()
+    except Exception as e:
+        traceback.print_exc()
+
+def sheet_exists(sheet_name):
+    """Check if a sheet with given name exists"""
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_ID
+        ).execute()
+        return any(sheet["properties"]["title"].lower() == sheet_name.lower() 
+                 for sheet in spreadsheet.get("sheets", []))
+    except Exception as e:
+        traceback.print_exc()
+        return False
+
+def calculate_average(coin):
+    try:
+        coin = coin.upper()
         avg_price, error = get_average_buy_price(coin)
         
         if error:
@@ -152,9 +280,8 @@ def process_average_command(command):
         return f"Average buy price for {coin}: ${avg_price:.2f}"
     except Exception as e:
         traceback.print_exc()
-        return f"Error processing /average command: {e}"
+        return f"Error calculating average: {e}"
 
-# Updated get_average_buy_price function
 def get_average_buy_price(coin, person=None):
     """Calculate average buy price for a coin (optionally filtered by person)"""
     try:
@@ -217,7 +344,6 @@ def get_average_buy_price(coin, person=None):
     except Exception as e:
         return None, f"Calculation Error: {e}"
 
-# Updated holdings functions
 def calculate_total_holdings_for_coin(coin):
     try:
         if not sheet_exists(coin):
@@ -295,7 +421,6 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
         return f"Error accessing sheet: {e}"
     except Exception as e:
         return f"Error calculating holdings: {e}"
-# [NO CHANGES NEEDED BELOW THIS LINE]
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
