@@ -27,9 +27,8 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
 
-# New keyboard functions
+# Keyboard markup functions
 def get_main_keyboard():
-    """Create a persistent reply keyboard"""
     return {
         "keyboard": [
             [{"text": "/add"}, {"text": "/average"}],
@@ -40,7 +39,6 @@ def get_main_keyboard():
     }
 
 def get_inline_keyboard():
-    """Create an inline keyboard for quick actions"""
     return {
         "inline_keyboard": [
             [{"text": "➕ Add Trade", "callback_data": "/add"}],
@@ -67,19 +65,19 @@ def telegram_webhook():
             chat_id = callback['message']['chat']['id']
             data = callback['data']
             
-            # Send quick response
+            # Send callback confirmation
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
                 json={"callback_query_id": callback['id']}
             )
             
-            # Process the callback data
+            # Process callback data
             if data == "/add":
-                send_telegram_message(chat_id, "Use format:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL")
+                send_telegram_message(chat_id, "📝 Use format:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL")
             elif data == "/average":
-                send_telegram_message(chat_id, "Enter coin:\n/average COIN")
+                send_telegram_message(chat_id, "🔢 Enter coin:\n/average COIN")
             elif data == "/holdings":
-                send_telegram_message(chat_id, "Choose:\n/holdings COIN\nor\n/holdings PERSON COIN")
+                send_telegram_message(chat_id, "📈 Choose:\n/holdings COIN\nor\n/holdings PERSON COIN")
             
             return "ok", 200
 
@@ -92,15 +90,15 @@ def telegram_webhook():
         text = message.get("text", "")
 
         if text.startswith("/start"):
-            welcome_msg = "Welcome to Crypto Tracker Bot! Choose an action:"
-            send_telegram_message(chat_id, welcome_msg, get_inline_keyboard())
-            send_telegram_message(chat_id, "Or use these quick commands:", get_main_keyboard())
+            send_telegram_message(chat_id, "🤖 Welcome to Crypto Tracker Bot!", get_inline_keyboard())
+            send_telegram_message(chat_id, "🛠️ Quick commands:", get_main_keyboard())
         elif text.startswith("/help"):
             help_text = """📚 Available Commands:
-            /add - Record new trade
-            /average - Check average price
-            /holdings - View holdings
-            """
+/add - Record new trade
+/average - Check average price
+/holdings - View holdings
+
+📱 Use buttons or type commands directly!"""
             send_telegram_message(chat_id, help_text)
         elif text.startswith("/add"):
             response = process_add_command(text)
@@ -126,7 +124,8 @@ def send_telegram_message(chat_id, text, reply_markup=None):
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": chat_id,
-            "text": text
+            "text": text,
+            "parse_mode": "Markdown"
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
@@ -135,9 +134,7 @@ def send_telegram_message(chat_id, text, reply_markup=None):
     except Exception as e:
         print(f"Failed to send message: {e}")
 
-
-
-# Updated process_average_command (add this with other process_* functions)
+# [Keep all existing functions below exactly as they were]
 def process_average_command(command):
     try:
         parts = command.split(" ")
@@ -298,7 +295,7 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
         return f"Error accessing sheet: {e}"
     except Exception as e:
         return f"Error calculating holdings: {e}"
-
+# [NO CHANGES NEEDED BELOW THIS LINE]
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
