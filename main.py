@@ -2,22 +2,36 @@ import os
 import json
 import traceback
 import datetime
+import time
+from threading import Thread
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests
 from googleapiclient.errors import HttpError
+from requests.exceptions import RequestException
 
 app = Flask(__name__)
 
+# ==================== Configuration ====================
 # Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
 
-# Load Google Sheets API credentials
+# API endpoints
+COINGECKO_API = "https://api.coingecko.com/api/v3"
+KUCOIN_API = "https://api.kucoin.com/api/v1"
+
+# Sheet configuration
+TRADES_HEADER = ["Coin", "Current Price (CG)", "KuCoin Price", "Last Updated"]
+MASTER_SHEET_GID = "1996633798"
+TRADES_SHEET_GID = "0"
+
+# ==================== Sheets Service Setup ====================
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
     raise ValueError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
+
 try:
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE,
@@ -27,7 +41,139 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to load service account credentials: {e}")
 
-# Keyboard markup functions
+# ==================== Price Tracking Functions ====================
+def price_updater():
+    """Background thread for price updates"""
+    while True:
+        try:
+            update_trades_sheet()
+            time.sleep(600)  # 10 minutes
+        except Exception as e:
+            print(f"Price updater error: {e}")
+            time.sleep(60)
+
+def update_trades_sheet():
+    """Update trades sheet with current prices"""
+    try:
+        master_coins = get_unique_coins_from_master()
+        existing_coins = get_existing_trades_entries()
+        new_coins = [c for c in master_coins if c not in existing_coins]
+        
+        if new_coins:
+            update_trades_entries(new_coins)
+        
+        refresh_all_prices()
+    except Exception as e:
+        print(f"Failed to update trades sheet: {e}")
+
+def get_unique_coins_from_master():
+    """Get unique coins from Master sheet"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"Master!C2:E",
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+        
+        coins = {}
+        for row in result.get('values', []):
+            if len(row) >= 3:
+                coin = row[0].upper()
+                exchange = row[2].lower()
+                coins.setdefault(coin, set()).add(exchange)
+        return coins
+    except Exception as e:
+        print(f"Error getting master coins: {e}")
+        return {}
+
+def get_existing_trades_entries():
+    """Get existing coins in Trades sheet"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Trades!A2:A",
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+        return [row[0].upper() for row in result.get('values', []) if row]
+    except Exception as e:
+        print(f"Error getting trades entries: {e}")
+        return []
+
+def update_trades_entries(new_coins):
+    """Add new coins to Trades sheet"""
+    try:
+        values = [[coin] for coin in new_coins.keys()]
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Trades!A2",
+            valueInputOption="USER_ENTERED",
+            body={"values": values}
+        ).execute()
+        print(f"Added {len(values)} new coins to Trades sheet")
+    except Exception as e:
+        print(f"Failed to update trades entries: {e}")
+
+def refresh_all_prices():
+    """Refresh all prices in Trades sheet"""
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Trades!A2:D",
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+        
+        updates = []
+        for i, row in enumerate(result.get('values', [])):
+            if len(row) < 4:
+                continue
+                
+            coin = row[0].upper()
+            gecko_price = get_coingecko_price(coin)
+            kucoin_price = get_kucoin_price(coin) if needs_kucoin_price(coin) else ""
+            
+            updates.append({
+                "range": f"Trades!B{i+2}:D{i+2}",
+                "values": [[gecko_price, kucoin_price, datetime.datetime.now().isoformat()]]
+            })
+        
+        if updates:
+            sheets_service.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"data": updates, "valueInputOption": "USER_ENTERED"}
+            ).execute()
+    except Exception as e:
+        print(f"Failed to refresh prices: {e}")
+
+def get_coingecko_price(coin):
+    """Get price from CoinGecko"""
+    try:
+        response = requests.get(
+            f"{COINGECKO_API}/simple/price",
+            params={"ids": coin.lower(), "vs_currencies": "usd"}
+        )
+        data = response.json()
+        return float(data[coin.lower()]["usd"])
+    except (RequestException, KeyError, ValueError):
+        return "N/A"
+
+def get_kucoin_price(coin):
+    """Get price from KuCoin"""
+    try:
+        response = requests.get(
+            f"{KUCOIN_API}/market/orderbook/level1",
+            params={"symbol": f"{coin}-USDT"}
+        )
+        data = response.json()
+        return float(data["data"]["price"])
+    except (RequestException, KeyError, ValueError):
+        return "N/A"
+
+def needs_kucoin_price(coin):
+    """Check if coin has KuCoin trades"""
+    master_coins = get_unique_coins_from_master()
+    return "kucoin" in master_coins.get(coin.upper(), set())
+
+# ==================== Telegram Bot Functions ====================
 def get_main_keyboard():
     return {
         "keyboard": [
@@ -51,75 +197,68 @@ def get_inline_keyboard():
 
 @app.route("/")
 def index():
-    return "Hello from Render + Python + Google Sheets!"
+    return "Crypto Tracker Bot - Active"
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     try:
         update = request.get_json()
-        print(f"Received update: {update}")
-
-        # Handle inline keyboard callbacks
+        
         if 'callback_query' in update:
             callback = update['callback_query']
             chat_id = callback['message']['chat']['id']
             data = callback['data']
             
-            # Send callback confirmation
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
                 json={"callback_query_id": callback['id']}
             )
             
-            # Process callback data
             if data == "/add":
-                send_telegram_message(chat_id, "📝 Use format:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL")
+                send_message(chat_id, "📝 Use format:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL")
             elif data == "/average":
-                send_telegram_message(chat_id, "🔢 Enter coin:\n/average COIN")
+                send_message(chat_id, "🔢 Enter coin:\n/average COIN")
             elif data == "/holdings":
-                send_telegram_message(chat_id, "📈 Choose:\n/holdings COIN\nor\n/holdings PERSON COIN")
+                send_message(chat_id, "📈 Choose:\n/holdings COIN\nor\n/holdings PERSON COIN")
             
             return "ok", 200
 
-        # Handle regular messages
         message = update.get("message")
         if not message:
             return "ok", 200
 
-        chat_id = message.get("chat", {}).get("id")
+        chat_id = message["chat"]["id"]
         text = message.get("text", "")
 
         if text.startswith("/start"):
-            send_telegram_message(chat_id, "🤖 Welcome to Crypto Tracker Bot!", get_inline_keyboard())
-            send_telegram_message(chat_id, "🛠️ Quick commands:", get_main_keyboard())
+            send_message(chat_id, "🤖 Welcome to Crypto Tracker Bot!", get_inline_keyboard())
+            send_message(chat_id, "🛠️ Quick commands:", get_main_keyboard())
         elif text.startswith("/help"):
             help_text = """📚 Available Commands:
 /add - Record new trade
 /average - Check average price
 /holdings - View holdings
-
-📱 Use buttons or type commands directly!"""
-            send_telegram_message(chat_id, help_text)
+📱 Use buttons or type commands!"""
+            send_message(chat_id, help_text)
         elif text.startswith("/add"):
             response = process_add_command(text)
-            send_telegram_message(chat_id, response)
+            send_message(chat_id, response)
         elif text.startswith("/average"):
             response = process_average_command(text)
-            send_telegram_message(chat_id, response)
+            send_message(chat_id, response)
         elif text.startswith("/holdings"):
             response = process_holdings_command(text)
-            send_telegram_message(chat_id, response)
+            send_message(chat_id, response)
         else:
-            send_telegram_message(chat_id, "❌ Unknown command. Use buttons or type /help")
+            send_message(chat_id, "❌ Unknown command. Use /help")
 
         return "ok", 200
     except Exception as e:
         traceback.print_exc()
-        print(f"Error in telegram_webhook: {e}")
         return "error", 500
 
-def send_telegram_message(chat_id, text, reply_markup=None):
-    """Send a message with optional keyboard"""
+def send_message(chat_id, text, reply_markup=None):
+    """Send Telegram message"""
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
@@ -129,122 +268,88 @@ def send_telegram_message(chat_id, text, reply_markup=None):
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
+        requests.post(url, json=payload)
     except Exception as e:
         print(f"Failed to send message: {e}")
 
-# Your existing functions (unchanged)
+# ==================== Trade Processing Functions ====================
 def process_add_command(command):
     try:
-        parts = command.split(" ")
+        parts = command.split()
         if len(parts) != 7:
-            return "Invalid format. Use: /add PERSON COIN PRICE QUANTITY EXCHANGE BUY/SELL"
+            return "❌ Invalid format. Use:\n/add PERSON COIN PRICE QTY EXCHANGE BUY/SELL"
 
-        person = parts[1].lower()
-        coin = parts[2].upper()
-        price = float(parts[3])
-        quantity = float(parts[4])
-        exchange = parts[5]
-        order_type = parts[6].upper()
+        _, person, coin, price, qty, exchange, order_type = parts
+        person = person.lower()
+        coin = coin.upper()
+        order_type = order_type.upper()
 
         if order_type not in ["BUY", "SELL"]:
-            return "Invalid order type. Use BUY or SELL."
+            return "❌ Invalid order type. Use BUY/SELL"
 
-        if price <= 0 or quantity <= 0:
-            return "Invalid price/quantity. Use positive numbers."
+        try:
+            price = float(price)
+            qty = float(qty)
+            if price <= 0 or qty <= 0:
+                raise ValueError
+        except ValueError:
+            return "❌ Invalid price/quantity. Use positive numbers"
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = [timestamp, person, coin, price, quantity, exchange, price * quantity, order_type]
+        new_row = [timestamp, person, coin, price, qty, exchange, price*qty, order_type]
 
-        # Ensure the master sheet exists with headers
-        create_sheet_if_not_exists("Master")
+        for sheet in ["Master", coin, person]:
+            create_sheet_if_not_exists(sheet)
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{sheet}!A2",
+                valueInputOption="USER_ENTERED",
+                body={"values": [new_row]}
+            ).execute()
 
-        # Ensure coin and person sheets exist with headers
-        create_sheet_if_not_exists(coin)
-        create_sheet_if_not_exists(person)
-
-        # Append to Master Sheet
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range="Master!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
-
-        # Append to Coin Sheet
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{coin}!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
-
-        # Append to Person Sheet
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{person}!A2",
-            valueInputOption="USER_ENTERED",
-            body={"values": [new_row]}
-        ).execute()
-
-        return f"✅ Trade recorded: {person} {order_type.lower()} {quantity} {coin} at ${price} on {exchange}."
+        return f"✅ Trade recorded: {person} {order_type.lower()} {qty} {coin} at ${price} on {exchange}"
     except Exception as e:
         traceback.print_exc()
-        return f"Error processing /add command: {e}"
+        return f"❌ Error processing trade: {str(e)}"
 
 def process_average_command(command):
     try:
-        parts = command.split(" ")
-        if len(parts) != 2:
-            return "Invalid format. Use: /average COIN"
-
-        coin = parts[1].upper()
-        return calculate_average(coin)
+        coin = command.split()[1].upper()
+        avg_price, error = get_average_buy_price(coin)
+        
+        if error:
+            return f"❌ Can't calculate average for {coin}: {error}"
+        return f"📊 Average buy price for {coin}: ${avg_price:.2f}"
+    except IndexError:
+        return "❌ Invalid format. Use: /average COIN"
     except Exception as e:
-        traceback.print_exc()
-        return f"Error processing /average command: {e}"
+        return f"❌ Error calculating average: {str(e)}"
 
 def process_holdings_command(command):
     try:
-        parts = command.split(" ")
-
+        parts = command.split()
+        
         if len(parts) == 2:
             coin = parts[1].upper()
-            return calculate_total_holdings_for_coin(coin)
+            return calculate_holdings(coin=coin)
         elif len(parts) == 3:
-            person = parts[1].lower()
-            coin = parts[2].upper()
-            return calculate_total_holdings_for_person_and_coin(person, coin)
+            person, coin = parts[1].lower(), parts[2].upper()
+            return calculate_holdings(person=person, coin=coin)
         else:
-            return "Invalid format. Use /holdings COIN or /holdings PERSON COIN"
+            return "❌ Invalid format. Use:\n/holdings COIN\nor\n/holdings PERSON COIN"
     except Exception as e:
-        traceback.print_exc()
-        return f"Error processing /holdings command: {e}"
+        return f"❌ Error calculating holdings: {str(e)}"
 
+# ==================== Sheets Utilities ====================
 def create_sheet_if_not_exists(sheet_name):
+    """Create sheet with headers if it doesn't exist"""
     try:
-        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-        sheet_titles = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
-
-        if sheet_name not in sheet_titles:
-            # Create the new sheet
-            requests_body = {
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": sheet_name
-                            }
-                        }
-                    }
-                ]
-            }
+        if not sheet_exists(sheet_name):
             sheets_service.spreadsheets().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID, body=requests_body
+                spreadsheetId=SPREADSHEET_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
             ).execute()
             
-            # Add headers to the new sheet
             headers = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total", "Type"]
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
@@ -253,174 +358,101 @@ def create_sheet_if_not_exists(sheet_name):
                 body={"values": [headers]}
             ).execute()
     except Exception as e:
-        traceback.print_exc()
+        print(f"Error creating sheet {sheet_name}: {e}")
 
 def sheet_exists(sheet_name):
-    """Check if a sheet with given name exists"""
+    """Check if sheet exists (case-sensitive)"""
     try:
         spreadsheet = sheets_service.spreadsheets().get(
             spreadsheetId=SPREADSHEET_ID
         ).execute()
-        return any(sheet["properties"]["title"].lower() == sheet_name.lower() 
-                 for sheet in spreadsheet.get("sheets", []))
+        return any(sheet["properties"]["title"] == sheet_name 
+                 for sheet in spreadsheet["sheets"])
     except Exception as e:
-        traceback.print_exc()
+        print(f"Error checking sheet existence: {e}")
         return False
 
-def calculate_average(coin):
-    try:
-        coin = coin.upper()
-        avg_price, error = get_average_buy_price(coin)
-        
-        if error:
-            return f"Can't calculate average for {coin}: {error}"
-        elif avg_price is None:
-            return f"No buy transactions found for {coin}"
-            
-        return f"Average buy price for {coin}: ${avg_price:.2f}"
-    except Exception as e:
-        traceback.print_exc()
-        return f"Error calculating average: {e}"
-
 def get_average_buy_price(coin, person=None):
-    """Calculate average buy price for a coin (optionally filtered by person)"""
+    """Calculate average buy price for a coin"""
     try:
-        if person:
-            if not sheet_exists(person):
-                return None, f"Person '{person}' not found"
-            sheet_name = person
-            range_name = f"{sheet_name}!A2:H"
-            filter_coin = True
-        else:
-            if not sheet_exists(coin):
-                return None, f"Coin '{coin}' not found"
-            sheet_name = coin
-            range_name = f"{sheet_name}!A2:H"
-            filter_coin = False
+        sheet_name = person or coin
+        if not sheet_exists(sheet_name):
+            return None, f"{'Person' if person else 'Coin'} not found"
 
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=range_name,
+            range=f"{sheet_name}!A2:H",
             valueRenderOption="UNFORMATTED_VALUE"
         ).execute()
-        values = result.get('values', [])
-
+        
         total_cost = 0.0
-        total_quantity = 0.0
-        filtered_rows = []
+        total_qty = 0.0
+        
+        for row in result.get('values', []):
+            if len(row) >= 8 and row[7].upper() == "BUY":
+                if person and row[2].upper() != coin:
+                    continue
+                    
+                try:
+                    total = float(row[6])
+                    qty = float(row[4])
+                    total_cost += total
+                    total_qty += qty
+                except (ValueError, IndexError):
+                    continue
 
-        if person:
-            filtered_rows = [
-                row for row in values
-                if len(row) >= 8 
-                and row[2].upper() == coin 
-                and row[7].upper() == "BUY"
-            ]
-        else:
-            filtered_rows = [
-                row for row in values
-                if len(row) >= 8 
-                and row[7].upper() == "BUY"
-            ]
-
-        for row in filtered_rows:
-            try:
-                total = float(row[6])
-                quantity = float(row[4])
-                total_cost += total
-                total_quantity += quantity
-            except (ValueError, IndexError):
-                continue
-
-        if total_quantity == 0:
-            return None, "No BUY transactions found"
-
-        return total_cost / total_quantity, None
-
-    except HttpError as e:
-        if e.resp.status == 404:
-            return None, "Sheet not found"
-        return None, f"API Error: {e}"
+        return (total_cost / total_qty, None) if total_qty > 0 else (None, "No buys found")
     except Exception as e:
-        return None, f"Calculation Error: {e}"
+        return None, str(e)
 
-def calculate_total_holdings_for_coin(coin):
+def calculate_holdings(coin=None, person=None):
+    """Calculate holdings for coin or person+coin"""
     try:
-        if not sheet_exists(coin):
-            return f"Coin '{coin}' not found"
+        sheet_name = person or coin
+        if not sheet_exists(sheet_name):
+            return f"❌ {'Person' if person else 'Coin'} not found"
 
-        sheet_name = coin
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=f"{sheet_name}!A2:H",
             valueRenderOption="UNFORMATTED_VALUE"
         ).execute()
-        values = result.get('values', [])
-
-        total_quantity = 0.0
-        for row in values:
+        
+        total_qty = 0.0
+        for row in result.get('values', []):
             if len(row) >= 8:
-                order_type = row[7].upper()
+                if person and row[2].upper() != coin:
+                    continue
+                    
                 try:
-                    quantity = float(row[4])
-                    total_quantity += quantity if order_type == "BUY" else -quantity
+                    qty = float(row[4])
+                    total_qty += qty if row[7].upper() == "BUY" else -qty
                 except (ValueError, IndexError):
                     continue
 
-        avg_price, avg_error = get_average_buy_price(coin)
-        usd_value = total_quantity * avg_price if avg_price else None
-
-        response = f"Total holdings for {coin}: {total_quantity:.8f}"
-        if usd_value is not None:
-            response += f"\nUSD Value: ${usd_value:.2f} (based on average buy price)"
-        elif avg_error:
-            response += f"\nUSD Value: Calculation failed ({avg_error})"
+        avg_price, error = get_average_buy_price(coin, person)
+        usd_value = total_qty * avg_price if avg_price else None
         
+        response = f"📦 Holdings for {person+' ' if person else ''}{coin}: {total_qty:.4f}"
+        if usd_value:
+            response += f"\n💵 USD Value: ${usd_value:.2f}"
+        elif error:
+            response += f"\n⚠️ Value calculation failed ({error})"
+            
         return response
-
-    except HttpError as e:
-        return f"Error accessing sheet: {e}"
     except Exception as e:
-        return f"Error calculating holdings: {e}"
+        return f"❌ Error: {str(e)}"
 
-def calculate_total_holdings_for_person_and_coin(person, coin):
-    try:
-        if not sheet_exists(person):
-            return f"Person '{person}' not found"
-
-        sheet_name = person
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{sheet_name}!A2:H",
-            valueRenderOption="UNFORMATTED_VALUE"
-        ).execute()
-        values = result.get('values', [])
-
-        total_quantity = 0.0
-        for row in values:
-            if len(row) >= 8 and row[2].upper() == coin:
-                order_type = row[7].upper()
-                try:
-                    quantity = float(row[4])
-                    total_quantity += quantity if order_type == "BUY" else -quantity
-                except (ValueError, IndexError):
-                    continue
-
-        avg_price, avg_error = get_average_buy_price(coin, person=person)
-        usd_value = total_quantity * avg_price if avg_price else None
-
-        response = f"Total holdings for {person} in {coin}: {total_quantity:.8f}"
-        if usd_value is not None:
-            response += f"\nUSD Value: ${usd_value:.2f} (based on personal average buy price)"
-        elif avg_error:
-            response += f"\nUSD Value: Calculation failed ({avg_error})"
-        
-        return response
-
-    except HttpError as e:
-        return f"Error accessing sheet: {e}"
-    except Exception as e:
-        return f"Error calculating holdings: {e}"
+# ==================== Initialization ====================
+def initialize_sheets():
+    """Initialize required sheets"""
+    for sheet in ["Master", "Trades"]:
+        try:
+            create_sheet_if_not_exists(sheet)
+        except Exception as e:
+            print(f"Error initializing {sheet} sheet: {e}")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    initialize_sheets()
+    Thread(target=price_updater, daemon=True).start()
+    app.run(host="0.0.0.0", port=5000)
