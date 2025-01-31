@@ -26,7 +26,7 @@ KUCOIN_API = "https://api.kucoin.com/api/v1"
 # Sheet configuration
 TRADES_HEADER = ["Coin", "Current Price (CG)", "KuCoin Price", "Last Updated"]
 MASTER_SHEET_GID = "1996633798"
-TRADES_SHEET_GID = "0"
+TRADES_SHEET_GID = "1984902860"
 
 # ==================== Sheets Service Setup ====================
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
