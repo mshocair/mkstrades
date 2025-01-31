@@ -342,23 +342,56 @@ def process_holdings_command(command):
 
 # ==================== Sheets Utilities ====================
 def create_sheet_if_not_exists(sheet_name):
-    """Create sheet with headers if it doesn't exist"""
+    """Safely create sheet with headers if it doesn't exist"""
     try:
+        # Check existence with case sensitivity
         if not sheet_exists(sheet_name):
+            print(f"Creating sheet: {sheet_name}")
+            # Add with conflict avoidance
             sheets_service.spreadsheets().batchUpdate(
                 spreadsheetId=SPREADSHEET_ID,
-                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
+                body={
+                    "requests": [{
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_name,
+                                "gridProperties": {
+                                    "rowCount": 1000,
+                                    "columnCount": 8
+                                }
+                            }
+                        }
+                    }]
+                }
             ).execute()
             
-            headers = ["Timestamp", "Person", "Coin", "Price", "Quantity", "Exchange", "Total", "Type"]
+            # Add headers
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
                 range=f"{sheet_name}!A1",
                 valueInputOption="RAW",
-                body={"values": [headers]}
+                body={"values": [HEADERS]}
             ).execute()
+            
+    except HttpError as e:
+        if "already exists" in str(e):
+            print(f"Sheet {sheet_name} already exists, skipping creation")
+        else:
+            print(f"Error creating sheet {sheet_name}: {e}")
     except Exception as e:
-        print(f"Error creating sheet {sheet_name}: {e}")
+        print(f"Unexpected error creating sheet {sheet_name}: {e}")
+
+# Update headers constant
+HEADERS = [
+    "Timestamp", 
+    "Person", 
+    "Coin", 
+    "Price", 
+    "Quantity", 
+    "Exchange", 
+    "Total", 
+    "Type"
+]
 
 def sheet_exists(sheet_name):
     """Check if sheet exists (case-sensitive)"""
