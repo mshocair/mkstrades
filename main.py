@@ -20,7 +20,8 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
 
 # Initialize scheduler
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(daemon=True)
+scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
 # Load Google Sheets API credentials
@@ -595,7 +596,7 @@ def calculate_total_holdings_for_person_and_coin(person, coin):
     except Exception as e:
         return f"Error calculating holdings: {e}"
 
-
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
     scheduler.start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
