@@ -1,8 +1,9 @@
 gunicorn
 google-auth-httplib2
 google-auth-oauthlib
-apscheduler==3.10.1
 flask==2.0.3
+werkzeug==2.0.3
+apscheduler==3.10.1
 google-auth==2.3.3
 google-api-python-client==2.36.0
 requests==2.26.0
