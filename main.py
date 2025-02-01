@@ -15,7 +15,7 @@ from requests.adapters import HTTPAdapter, Retry
 
 app = Flask(__name__)
 
-# ==================== CONFIGURATION ====================
+# ==================== Configuration ====================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -39,10 +39,6 @@ COIN_ID_MAPPING = {
 
 # Sheet configuration
 TRADES_HEADER = ["Coin", "Current Price (CG)", "KuCoin Price", "Last Updated"]
-HEADERS = [
-    "Timestamp", "Person", "Coin", "Price",
-    "Quantity", "Exchange", "Total", "Type"
-]
 
 # Configure HTTP session
 session = requests.Session()
@@ -54,7 +50,7 @@ retries = Retry(
 )
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# ==================== GOOGLE SHEETS SETUP ====================
+# ==================== Google Sheets Setup ====================
 if not os.path.exists(SERVICE_ACCOUNT_FILE):
     raise ValueError(f"Service account file not found: {SERVICE_ACCOUNT_FILE}")
 
@@ -65,10 +61,10 @@ try:
     )
     sheets_service = build("sheets", "v4", credentials=creds)
 except Exception as e:
-    logger.error(f"Failed to load service account: {e}")
+    logger.error(f"Failed to load service account credentials: {e}")
     raise
 
-# ==================== PRICE TRACKING SYSTEM ====================
+# ==================== Price Tracking System ====================
 def price_updater():
     """Background price update thread"""
     logger.info("Starting price updater")
@@ -80,7 +76,7 @@ def price_updater():
         time.sleep(600)
 
 def update_trades_sheet():
-    """Main price update function"""
+    """Update trades sheet with current prices"""
     try:
         master_coins = get_unique_coins_from_master()
         existing_coins = get_existing_trades_entries()
@@ -190,7 +186,7 @@ def needs_kucoin_price(coin):
     master_coins = get_unique_coins_from_master()
     return "kucoin" in master_coins.get(coin.upper(), set())
 
-# ==================== TELEGRAM BOT ====================
+# ==================== Telegram Bot Functions ====================
 def get_main_keyboard():
     return {
         "keyboard": [
@@ -291,7 +287,7 @@ def send_message(chat_id, text, reply_markup=None):
     except Exception as e:
         logger.error(f"Message send failed: {e}")
 
-# ==================== TRADE PROCESSING ====================
+# ==================== Trade Processing ====================
 def process_add_command(command):
     """Process /add command"""
     try:
@@ -356,7 +352,7 @@ def process_holdings_command(command):
         logger.error(f"Holdings error: {e}")
         return "❌ Calculation failed"
 
-# ==================== SHEET MANAGEMENT ====================
+# ==================== Sheet Management ====================
 def create_sheet_if_not_exists(sheet_name):
     """Create sheet if missing"""
     try:
@@ -399,7 +395,78 @@ def sheet_exists(sheet_name):
         logger.error(f"Sheet check failed: {e}")
         return False
 
-# ==================== MAIN ====================
+def get_average_buy_price(coin, person=None):
+    """Calculate average buy price for a coin"""
+    try:
+        sheet_name = person or coin
+        if not sheet_exists(sheet_name):
+            return None, f"{'Person' if person else 'Coin'} not found"
+
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H",
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+        
+        total_cost = 0.0
+        total_qty = 0.0
+        
+        for row in result.get('values', []):
+            if len(row) >= 8 and row[7].upper() == "BUY":
+                if person and row[2].upper() != coin:
+                    continue
+                    
+                try:
+                    total = float(row[6])
+                    qty = float(row[4])
+                    total_cost += total
+                    total_qty += qty
+                except (ValueError, IndexError):
+                    continue
+
+        return (total_cost / total_qty, None) if total_qty > 0 else (None, "No buys found")
+    except Exception as e:
+        return None, str(e)
+
+def calculate_holdings(coin=None, person=None):
+    """Calculate holdings for coin or person+coin"""
+    try:
+        sheet_name = person or coin
+        if not sheet_exists(sheet_name):
+            return f"❌ {'Person' if person else 'Coin'} not found"
+
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{sheet_name}!A2:H",
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+        
+        total_qty = 0.0
+        for row in result.get('values', []):
+            if len(row) >= 8:
+                if person and row[2].upper() != coin:
+                    continue
+                    
+                try:
+                    qty = float(row[4])
+                    total_qty += qty if row[7].upper() == "BUY" else -qty
+                except (ValueError, IndexError):
+                    continue
+
+        avg_price, error = get_average_buy_price(coin, person)
+        usd_value = total_qty * avg_price if avg_price else None
+        
+        response = f"📦 Holdings for {person+' ' if person else ''}{coin}: {total_qty:.4f}"
+        if usd_value:
+            response += f"\n💵 USD Value: ${usd_value:.2f}"
+        elif error:
+            response += f"\n⚠️ Value calculation failed ({error})"
+            
+        return response
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+# ==================== Main ====================
 if __name__ == "__main__":
     # Initialize sheets
     for sheet in ["Master", "Trades"]:
