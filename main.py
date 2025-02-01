@@ -146,6 +146,27 @@ def get_unique_coins_from_master():
         logger.error(f"Error reading Master sheet: {e}")
         return []
 
+def get_existing_trades_entries():
+    """
+    Reads the Trades sheet (column A) to see which coins are already listed.
+    Returns a list of uppercase coin symbols.
+    """
+    try:
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range="Trades!A2:A", 
+            valueRenderOption="UNFORMATTED_VALUE"
+        ).execute()
+
+        existing_coins = set()
+        for row in result.get('values', []):
+            if row and row[0]:
+                existing_coins.add(row[0].upper().strip())
+        return list(existing_coins)
+    except Exception as e:
+        logger.error(f"Error reading existing coins from Trades sheet: {e}")
+        return []
+
 def refresh_all_prices():
     try:
         result = sheets_service.spreadsheets().values().get(
@@ -474,12 +495,16 @@ def calculate_holdings(coin=None, person=None):
         total_qty = 0.0
         for row in result.get('values', []):
             if len(row) >= 8:
+                # If person is specified, ensure row's coin matches
                 if person and row[2].upper() != coin:
                     continue
                     
                 try:
                     qty = float(row[4])
-                    total_qty += qty if row[7].upper() == "BUY" else -qty
+                    if row[7].upper() == "BUY":
+                        total_qty += qty
+                    elif row[7].upper() == "SELL":
+                        total_qty -= qty
                 except (ValueError, IndexError):
                     continue
 
