@@ -30,12 +30,10 @@ SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
 # API configuration
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 KUCOIN_API = "https://api.kucoin.com/api/v1"
-COIN_ID_MAPPING = {
-    'BTC': 'bitcoin',
-    'ETH': 'ethereum',
-    'USDT': 'tether',
-    # Add more mappings as needed
-}
+
+# We no longer store a static dictionary for every coin manually.
+# Instead, we'll dynamically build one at startup:
+COINGECKO_SYMBOL_MAP = {}
 
 # Sheet configuration
 TRADES_HEADER = ["Coin", "Current Price (CG)", "KuCoin Price", "Last Updated"]
@@ -67,6 +65,34 @@ def get_sheets_service():
         raise
 
 sheets_service = get_sheets_service()
+
+# ==================== Build Symbol → ID Map ====================
+def build_coingecko_symbol_map():
+    """
+    Fetch the full list of coins from CoinGecko and build a dict:
+    symbol_map[symbol.lower()] = coin_id
+    
+    If multiple coins share the same symbol, this picks the first encountered.
+    """
+    url = f"{COINGECKO_API}/coins/list"
+    try:
+        logger.info("Fetching all coins list from CoinGecko...")
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+        all_coins = response.json()  # list of dicts: {id, symbol, name}
+        
+        symbol_map = {}
+        for coin_info in all_coins:
+            symbol = coin_info["symbol"].lower()
+            # Only set if not already mapped, so first match "wins"
+            if symbol not in symbol_map:
+                symbol_map[symbol] = coin_info["id"]
+        
+        logger.info(f"CoinGecko symbol map built. Total unique symbols: {len(symbol_map)}")
+        return symbol_map
+    except Exception as e:
+        logger.error(f"Error building symbol map from CoinGecko: {e}")
+        return {}
 
 # ==================== Price Tracking System ====================
 def initialize_trades_sheet():
@@ -176,7 +202,8 @@ def refresh_all_prices():
         ).execute()
         
         updates = []
-        for i, row in enumerate(result.get('values', [])):
+        rows = result.get('values', [])
+        for i, row in enumerate(rows):
             if not row or not row[0].strip():
                 continue
             
@@ -203,9 +230,21 @@ def refresh_all_prices():
         logger.error(f"Price refresh error: {e}")
         raise
 
-def get_coingecko_price(coin):
+# ============= Modified get_coingecko_price =============
+def get_coingecko_price(coin_symbol):
+    """
+    Uses our global COINGECKO_SYMBOL_MAP to find the correct coin ID.
+    Then queries the /simple/price endpoint for USD value.
+    """
     try:
-        coin_id = COIN_ID_MAPPING.get(coin.upper(), coin.lower())
+        symbol_lower = coin_symbol.lower()
+        coin_id = COINGECKO_SYMBOL_MAP.get(symbol_lower)
+
+        if not coin_id:
+            # We have no known ID for this symbol
+            logger.error(f"CoinGecko: No matching ID for symbol '{coin_symbol}'")
+            return "N/A"
+
         response = session.get(
             f"{COINGECKO_API}/simple/price",
             params={"ids": coin_id, "vs_currencies": "usd"},
@@ -213,9 +252,11 @@ def get_coingecko_price(coin):
         )
         response.raise_for_status()
         data = response.json()
+
+        # e.g. data = {"dogecoin":{"usd":0.08}}
         return float(data[coin_id]["usd"])
     except Exception as e:
-        logger.error(f"CoinGecko error for {coin}: {e}")
+        logger.error(f"CoinGecko error for {coin_symbol}: {e}")
         return "N/A"
 
 def get_kucoin_price(coin):
@@ -523,6 +564,12 @@ def calculate_holdings(coin=None, person=None):
 
 # ==================== Main ====================
 if __name__ == "__main__":
+    # 1) Build the CoinGecko symbol map once on startup
+    COINGECKO_SYMBOL_MAP = build_coingecko_symbol_map()
+
+    # 2) Initialize Trades sheet and start background price updater
     initialize_trades_sheet()
     Thread(target=price_updater, daemon=True).start()
+
+    # 3) Run Flask
     app.run(host="0.0.0.0", port=5000)
